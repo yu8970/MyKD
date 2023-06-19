@@ -146,6 +146,7 @@ class LDRetinaHead(RetinaGFLHead):
         """
         Args:
             x (list[Tensor]): Features from FPN.
+            out_teacher：teacher model bbox_head 最终输出结果
             img_metas (list[dict]): Meta information of each image, e.g.,
                 image size, scaling factor, etc.
             gt_bboxes (Tensor): Ground truth bboxes of the image,
@@ -163,8 +164,7 @@ class LDRetinaHead(RetinaGFLHead):
             - losses (dict[str, Tensor]): A dictionary of loss components.
             - proposal_list (list[Tensor]): Proposals of each image.
         """
-        outs = self(x)
-
+        outs = self(x)  # outs: cls_scores + bbox_preds
         if gt_labels is None:
             loss_inputs = outs + (gt_bboxes, out_teacher, img_metas)
         else:
@@ -202,16 +202,27 @@ class LDRetinaHead(RetinaGFLHead):
 
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
+
+        在检测算法中正负样本的设置主要包含两个关键的步骤：
+            1.assigner:为每一个先验框[anchor]分配属性
+                正样本
+                负样本
+                其它［即不当成正样本又不当成负样本处理，忽略］
+            2.sampler:采取某种策略［如随机采样］从分配好的正负样本中选出对应数量的正负样本进行训练
+
+
         """
         featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
-        assert len(featmap_sizes) == self.anchor_generator.num_levels
+        assert len(featmap_sizes) == self.anchor_generator.num_levels  # retinaNet中N为5，strides=[8, 16, 32, 64, 128]
 
         device = cls_scores[0].device
 
         soft_labels, soft_targets = out_teacher
+        # 获取anchors
         anchor_list, valid_flag_list = self.get_anchors(
             featmap_sizes, img_metas, device=device)
         label_channels = self.cls_out_channels if self.use_sigmoid_cls else 1
+        # 计算多个图像中anchors的回归和分类目标。
         cls_reg_targets = self.get_targets(
             anchor_list,
             valid_flag_list,
@@ -297,12 +308,18 @@ class LDRetinaHead(RetinaGFLHead):
                 num_total_pos (int): Number of positive samples in all images
                 num_total_neg (int): Number of negative samples in all images
         """
+        # 检查anchors是否在边界内
         inside_flags = anchor_inside_flags(flat_anchors, valid_flags,
                                            img_meta['img_shape'][:2],
                                            self.train_cfg.allowed_border)
+
+        # 如果没有任何锚点位于有效范围内，即`inside_flags`全为False，那么该函数会返回一个
+        # 由7个`None`组成的元组 `(None, None, None, None, None, None, None)`。这表示没有有效的anchors，无法计算目标值。
         if not inside_flags.any():
             return (None, ) * 7
+
         # assign gt and sample anchors
+        # 用于为 位于有效范围内的锚点分配对应的真实框，并进行采样
         anchors = flat_anchors[inside_flags, :]
 
         num_level_anchors_inside = self.get_num_level_anchors_inside(
@@ -501,6 +518,12 @@ class LDRetinaHead(RetinaGFLHead):
            the threshold as postive
         6. limit the positive sample's center in gt
 
+        1.计算所有bbox（所有金字塔级别的bbox）和gt之间的iou
+        2.计算所有bbox和gt之间的中心距离
+        3.在每个金字塔级别上，对于每个gt，选择其中心最靠近gt中心的k个bbox，因此我们总共选择k*l个bbox作为每个gt的候选者
+        4.为这些候选者获得相应的iou，并计算均值和std，将均值+std设置为iou阈值
+        5.选择iou大于或等于阈值的候选项为正
+        6.将阳性样本的中心限制在gt
 
         Args:
             bboxes (Tensor): Bounding boxes to be assigned, shape(n, 4).
@@ -514,7 +537,8 @@ class LDRetinaHead(RetinaGFLHead):
             :obj:`AssignResult`: The assign result.
         """
         INF = 100000000
-        bboxes = bboxes[:, :4]
+        bboxes = bboxes[:, :4]  # 对bboxes进行切片操作，保留其中的前4列，即将bboxes张量的维度从(N, 5)调整为(N, 4)，其中N表示框的数量。
+                                # 这段代码的目的是将bboxes张量的最后一列（通常为置信度或其他附加信息）移除，只保留框的坐标信息。
         num_gt, num_bboxes = gt_bboxes.size(0), bboxes.size(0)
         self.topk = 9
         # compute iou between all bbox and gt
@@ -523,10 +547,8 @@ class LDRetinaHead(RetinaGFLHead):
         overlaps = self.iou_calculator(bboxes, gt_bboxes)
         diou = self.iou_calculator(bboxes, gt_bboxes, mode='diou')
         # assign 0 by default
-        assigned_gt_inds = overlaps.new_full((num_bboxes, ),
-                                             0,
-                                             dtype=torch.long)
-        assigned_vlr = (assigned_gt_inds + 0).float()
+        assigned_gt_inds = overlaps.new_full((num_bboxes, ), 0, dtype=torch.long) # 用于记录每个bbox分配到的ground truth框的索引
+        assigned_vlr = (assigned_gt_inds + 0).float()  # 创建了一个名为assigned_vlr的张量，其值与assigned_gt_inds相同，并转换为浮点型。
 
         # compute center distance between all bbox and gt
         gt_cx = (gt_bboxes[:, 0] + gt_bboxes[:, 2]) / 2.0
@@ -541,11 +563,12 @@ class LDRetinaHead(RetinaGFLHead):
                      gt_points[None, :, :]).pow(2).sum(-1).sqrt()
 
         # Selecting candidates based on the center distance
+        # 两个空列表candidate_idxs和candidate_idxs_t，用于存储候选框的索引。
         candidate_idxs = []
         candidate_idxs_t = []
 
         start_idx = 0
-        for level, bboxes_per_level in enumerate(num_level_bboxes):
+        for level, bboxes_per_level in enumerate(num_level_bboxes): # 用enumerate函数获取当前金字塔层级的索引和该层级的bboxes数量
             # on each pyramid level, for each gt,
             # select k bbox whose center are closest to the gt center
             end_idx = start_idx + bboxes_per_level
@@ -588,8 +611,7 @@ class LDRetinaHead(RetinaGFLHead):
 
         # if an anchor box is assigned to multiple gts,
         # the one with the highest IoU will be selected.
-        overlaps_inf = torch.full_like(overlaps,
-                                       -INF).t().contiguous().view(-1)
+        overlaps_inf = torch.full_like(overlaps,-INF).t().contiguous().view(-1)
         index = candidate_idxs.view(-1)[is_pos.view(-1)]
 
         overlaps_inf[index] = overlaps.t().contiguous().view(-1)[index]

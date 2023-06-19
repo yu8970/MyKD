@@ -13,11 +13,11 @@ model = dict(
         style='pytorch'),
     neck=dict(
         type='FPN',
-        in_channels=[256, 512, 1024, 2048],
-        out_channels=256,
-        start_level=1,
-        add_extra_convs='on_input',
-        num_outs=5),
+        in_channels=[256, 512, 1024, 2048],  # ResNet 模块输出的4个尺度特征图通道数，指ResNet输出的4个不同尺度特征图 (c2,c3,c4,c5)
+        out_channels=256,                    # ResNet 模块输出的4个尺度特征图通道数
+        start_level=1,                       # 从输入多尺度特征图的第几个开始计算，从0开始，这里start_level=1,说明只用了c3,c4,c5
+        add_extra_convs='on_input',          # 额外输出层的特征图来源，FPN一共输出5个，其他2个来自backbone
+        num_outs=5),                         # FPN 输出特征图个数，3+2
     bbox_head=dict(
         type='RetinaHead',
         num_classes=80,
