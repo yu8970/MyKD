@@ -116,12 +116,9 @@ class LDFCOSHead(FCOSGFLHead):
             loss_cls_kd = bbox_pred.sum() * 0
 
         if len(remain_inds) > 0:
-            neg_pred_corners = bbox_pred[remain_inds].reshape(
-                -1, self.reg_max + 1)
-            neg_soft_corners = soft_targets[remain_inds].reshape(
-                -1, self.reg_max + 1)
-            remain_targets = cls_score.detach().sigmoid().max(
-                dim=1)[0][remain_inds]
+            neg_pred_corners = bbox_pred[remain_inds].reshape(-1, self.reg_max + 1)
+            neg_soft_corners = soft_targets[remain_inds].reshape(-1, self.reg_max + 1)
+            remain_targets = cls_score.detach().sigmoid().max(dim=1)[0][remain_inds]
 
             loss_ld_neg = 0.25 * self.loss_ld(
                 neg_pred_corners,

@@ -40,8 +40,9 @@ class LDATSSHead(ATSSGFLHead):
         self.loss_kd = build_loss(loss_kd)
 
     def loss_single(self, anchors, cls_score, bbox_pred, centerness, labels,
-                    label_weights, bbox_targets, stride, soft_targets,
-                    soft_label, assigned_neg, num_total_samples):
+                    label_weights, bbox_targets,
+                    stride, soft_targets, soft_label, assigned_neg, # ld新增的
+                    num_total_samples):
         """Compute loss of a single scale level.
 
         Args:
@@ -51,8 +52,7 @@ class LDATSSHead(ATSSGFLHead):
                 level with shape (N, num_anchors * 4, H, W).
             anchors (Tensor): Box reference for each scale level with shape
                 (N, num_total_anchors, 4).
-            labels (Tensor): Labels of each anchors with shape
-                (N, num_total_anchors).
+            labels (Tensor): Labels of each anchors with shape (N, num_total_anchors).
             label_weights (Tensor): Label weights of each anchor with shape
                 (N, num_total_anchors)
             bbox_targets (Tensor): BBox regression targets of each anchor wight
@@ -65,27 +65,20 @@ class LDATSSHead(ATSSGFLHead):
         """
 
         anchors = anchors.reshape(-1, 4)
-        cls_score = cls_score.permute(0, 2, 3, 1).reshape(
-            -1, self.cls_out_channels).contiguous()
-        soft_label = soft_label.permute(0, 2, 3,
-                                        1).reshape(-1, self.cls_out_channels)
-        bbox_pred = bbox_pred.permute(0, 2, 3,
-                                      1).reshape(-1, 4 * (self.reg_max + 1))
+        cls_score = cls_score.permute(0, 2, 3, 1).reshape(-1, self.cls_out_channels).contiguous()
+        soft_label = soft_label.permute(0, 2, 3, 1).reshape(-1, self.cls_out_channels)
+        bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(-1, 4 * (self.reg_max + 1))
         centerness = centerness.permute(0, 2, 3, 1).reshape(-1)
         bbox_targets = bbox_targets.reshape(-1, 4)
         labels = labels.reshape(-1)
         label_weights = label_weights.reshape(-1)
-        soft_targets = soft_targets.permute(0, 2, 3,
-                                            1).reshape(-1,
-                                                       4 * (self.reg_max + 1))
+        soft_targets = soft_targets.permute(0, 2, 3, 1).reshape(-1, 4 * (self.reg_max + 1))
         # classification loss
-        loss_cls = self.loss_cls(
-            cls_score, labels, label_weights, avg_factor=num_total_samples)
+        loss_cls = self.loss_cls(cls_score, labels, label_weights, avg_factor=num_total_samples)
 
         # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
         bg_class_ind = self.num_classes
-        pos_inds = ((labels >= 0)
-                    & (labels < bg_class_ind)).nonzero().squeeze(1)
+        pos_inds = ((labels >= 0) & (labels < self.num_classes)).nonzero().squeeze(1)
 
         if len(pos_inds) > 0:
             pos_bbox_targets = bbox_targets[pos_inds]
@@ -147,14 +140,10 @@ class LDATSSHead(ATSSGFLHead):
         assigned_neg = assigned_neg.reshape(-1)
         remain_inds = (assigned_neg > 0).nonzero().squeeze(1)
         if len(remain_inds) > 0:
-            neg_pred_corners = bbox_pred[remain_inds].reshape(
-                -1, self.reg_max + 1)
-            neg_soft_corners = soft_targets[remain_inds].reshape(
-                -1, self.reg_max + 1)
-            weight_targetss = ((cls_score.detach().sigmoid().max(dim=1)[0]) <
-                               0).float()
-            remain_targets = weight_targetss[remain_inds] + assigned_neg[
-                remain_inds]
+            neg_pred_corners = bbox_pred[remain_inds].reshape(-1, self.reg_max + 1)
+            neg_soft_corners = soft_targets[remain_inds].reshape(-1, self.reg_max + 1)
+            weight_targetss = ((cls_score.detach().sigmoid().max(dim=1)[0]) < 0).float()
+            remain_targets = weight_targetss[remain_inds] + assigned_neg[remain_inds]
             loss_ld_neg = 0.15 * self.loss_ld(
                 neg_pred_corners,
                 neg_soft_corners,
@@ -237,6 +226,7 @@ class LDATSSHead(ATSSGFLHead):
                 label_weights_list,
                 bbox_targets_list,
                 self.anchor_generator.strides,
+                # 以下三个是新增的
                 soft_corners,
                 soft_labels,
                 assigned_neg_list,
@@ -332,8 +322,9 @@ class LDATSSHead(ATSSGFLHead):
             gt_labels_list = [None for _ in range(num_imgs)]
 
         (all_anchors, all_labels, all_label_weights, all_bbox_targets,
-         all_bbox_weights, pos_inds_list, neg_inds_list, all_vlr_region,
-         all_im_region) = multi_apply(
+         all_bbox_weights, pos_inds_list, neg_inds_list,
+         all_vlr_region, all_im_region
+         ) = multi_apply(
              self._get_target_single,
              anchor_list,
              valid_flag_list,
@@ -480,10 +471,8 @@ class LDATSSHead(ATSSGFLHead):
         if unmap_outputs:
             num_total_anchors = flat_anchors.size(0)
             anchors = unmap(anchors, num_total_anchors, inside_flags)
-            labels = unmap(
-                labels, num_total_anchors, inside_flags, fill=self.num_classes)
-            label_weights = unmap(label_weights, num_total_anchors,
-                                  inside_flags)
+            labels = unmap(labels, num_total_anchors, inside_flags, fill=self.num_classes)
+            label_weights = unmap(label_weights, num_total_anchors, inside_flags)
             bbox_targets = unmap(bbox_targets, num_total_anchors, inside_flags)
             bbox_weights = unmap(bbox_weights, num_total_anchors, inside_flags)
             vlr_region = unmap(vlr_region, num_total_anchors, inside_flags)

@@ -256,8 +256,7 @@ class LDv2Head(GFocalHead):
         if len(remain_inds) > 0:
             neg_pred_corners = bbox_pred[remain_inds].reshape(
                 -1, self.reg_max + 1)
-            neg_soft_corners = soft_targets[remain_inds].reshape(
-                -1, self.reg_max + 1)
+            neg_soft_corners = soft_targets[remain_inds].reshape(-1, self.reg_max + 1)
 
             remain_targets = vlr_region[remain_inds]
 

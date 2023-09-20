@@ -518,7 +518,7 @@ class LDRetinaHead(RetinaGFLHead):
            the threshold as postive
         6. limit the positive sample's center in gt
 
-        1.计算所有bbox（所有金字塔级别的bbox）和gt之间的iou
+        1.计算所有bbox（所有fpn级别的bbox）和gt之间的iou
         2.计算所有bbox和gt之间的中心距离
         3.在每个金字塔级别上，对于每个gt，选择其中心最靠近gt中心的k个bbox，因此我们总共选择k*l个bbox作为每个gt的候选者
         4.为这些候选者获得相应的iou，并计算均值和std，将均值+std设置为iou阈值

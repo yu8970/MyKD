@@ -188,17 +188,16 @@ class ATSSAssigner(BaseAssigner):
                        gt_labels=None):
 
         INF = 100000000
-        bboxes = bboxes[:, :4]
+        bboxes = bboxes[:, :4]  # 只取其前四个列,即坐标值
         num_gt, num_bboxes = gt_bboxes.size(0), bboxes.size(0)
 
         # compute iou between all bbox and gt
 
-        overlaps = self.iou_calculator(bboxes, gt_bboxes)
-        diou = self.iou_calculator(bboxes, gt_bboxes, mode='diou')
+        overlaps = self.iou_calculator(bboxes, gt_bboxes)           # IOU
+        diou = self.iou_calculator(bboxes, gt_bboxes, mode='diou')  # DIOU
         # assign 0 by default
-        assigned_gt_inds = overlaps.new_full((num_bboxes, ),
-                                             0,
-                                             dtype=torch.long)
+        # 表示每个建议的边界框被分配给哪个真实的边界框
+        assigned_gt_inds = overlaps.new_full((num_bboxes, ), 0, dtype=torch.long)
         vlr_region_iou = (assigned_gt_inds + 0).float()
         if num_gt == 0 or num_bboxes == 0:
             # No ground truth or boxes, return empty assignment
@@ -209,11 +208,8 @@ class ATSSAssigner(BaseAssigner):
             if gt_labels is None:
                 assigned_labels = None
             else:
-                assigned_labels = overlaps.new_full((num_bboxes, ),
-                                                    -1,
-                                                    dtype=torch.long)
-            return AssignResult(
-                num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
+                assigned_labels = overlaps.new_full((num_bboxes, ), -1,mdtype=torch.long)
+            return AssignResult(num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
 
         # compute center distance between all bbox and gt
         gt_cx = (gt_bboxes[:, 0] + gt_bboxes[:, 2]) / 2.0
@@ -224,13 +220,11 @@ class ATSSAssigner(BaseAssigner):
         bboxes_cy = (bboxes[:, 1] + bboxes[:, 3]) / 2.0
         bboxes_points = torch.stack((bboxes_cx, bboxes_cy), dim=1)
 
-        distances = (bboxes_points[:, None, :] -
-                     gt_points[None, :, :]).pow(2).sum(-1).sqrt()
+        distances = (bboxes_points[:, None, :] - gt_points[None, :, :]).pow(2).sum(-1).sqrt()
 
-        if (self.ignore_iof_thr > 0 and gt_bboxes_ignore is not None
-                and gt_bboxes_ignore.numel() > 0 and bboxes.numel() > 0):
-            ignore_overlaps = self.iou_calculator(
-                bboxes, gt_bboxes_ignore, mode='iof')
+        # 确保了那些与需要忽略的gt_bbox具有较高IoU的bbox不会被分配给真实的边界框
+        if (self.ignore_iof_thr > 0 and gt_bboxes_ignore is not None and gt_bboxes_ignore.numel() > 0 and bboxes.numel() > 0):
+            ignore_overlaps = self.iou_calculator(bboxes, gt_bboxes_ignore, mode='iof')
             ignore_max_overlaps, _ = ignore_overlaps.max(dim=1)
             ignore_idxs = ignore_max_overlaps > self.ignore_iof_thr
             distances[ignore_idxs, :] = INF
@@ -242,13 +236,15 @@ class ATSSAssigner(BaseAssigner):
 
         start_idx = 0
         for level, bboxes_per_level in enumerate(num_level_bboxes):
+            # level：代表了当前的金字塔层级索引。
+            # bboxes_per_level：代表了当前金字塔层级上的边界框数量。
             # on each pyramid level, for each gt,
             # select k bbox whose center are closest to the gt center
             end_idx = start_idx + bboxes_per_level
             distances_per_level = distances[start_idx:end_idx, :]
             selectable_t = min(self.topk, bboxes_per_level)
             selectable_k = min(bboxes_per_level, bboxes_per_level)
-            _, topk_idxs_per_level = distances_per_level.topk(
+            _, topk_idxs_per_level = distances_per_level.topk(   # 选择与gt中心距离最近的那些bbox的索引
                 selectable_k, dim=0, largest=False)
             _, topt_idxs_per_level = distances_per_level.topk(
                 selectable_t, dim=0, largest=False)
@@ -260,39 +256,44 @@ class ATSSAssigner(BaseAssigner):
 
         # get corresponding iou for the these candidates, and compute the
         # mean and std, set mean + std as the iou threshold
+        # overlaps: 这是一个矩阵，其形状为(num_bboxes, num_gt)，表示每个bbox与每个gt之间的IoU值。
+        # 假设candidate_idxs_t是tensor([1, 4, 7])，并且num_gt是3，那么这个索引操作将会从overlaps矩阵中选择下列的IoU值：(1,0)，(4,1) 和 (7,2)。
+        # 总的来说，candidate_overlaps_t是一个1D Tensor，它包含了每个gt与与其中心最近的topk个建议框之间的IoU值。
         candidate_overlaps_t = overlaps[candidate_idxs_t, torch.arange(num_gt)]
         # t_overlaps = overlaps[candidate_idxs_t, torch.arange(num_gt)]
-
-        t_diou = diou[candidate_idxs, torch.arange(num_gt)]
-        overlaps_mean_per_gt = candidate_overlaps_t.mean(0)
-        overlaps_std_per_gt = candidate_overlaps_t.std(0)
+        # candidate_idxs是取了所有bbox的idx，candidate_idxs_t是取了中心距离最近的topk个bbox的索引
+        t_diou = diou[candidate_idxs, torch.arange(num_gt)]  # 包含了每个gt与选定的建议框之间的DIoU值。
+        overlaps_mean_per_gt = candidate_overlaps_t.mean(0)  # 计算了每个gt与所有建议框之间的IoU值的平均值
+        overlaps_std_per_gt = candidate_overlaps_t.std(0)    # 计算了每个gt与所有建议框之间的IoU值的标准差
         overlaps_thr_per_gt = overlaps_mean_per_gt + overlaps_std_per_gt
 
         #is_pos = (candidate_overlaps < overlaps_thr_per_gt[None, :]) & (candidate_overlaps >= 0.5*overlaps_thr_per_gt[None, :])
-        is_pos = (t_diou < overlaps_thr_per_gt[None, :]) & (
-            t_diou >= 0.25 * overlaps_thr_per_gt[None, :])
+        is_pos = (t_diou < overlaps_thr_per_gt[None, :]) & (t_diou >= 0.25 * overlaps_thr_per_gt[None, :])
 
+        # 目的是更新candidate_idxs矩阵，使其对于每个gt都有正确的引用索引。
         # limit the positive sample's center in gt
         for gt_idx in range(num_gt):
             candidate_idxs[:, gt_idx] += gt_idx * num_bboxes
 
-        candidate_idxs = candidate_idxs.view(-1)
+        candidate_idxs = candidate_idxs.view(-1) # 将其变为一个一维张量。
 
-        overlaps_inf = torch.full_like(overlaps,
-                                       -INF).t().contiguous().view(-1)
+        # 创建一个与overlaps形状相同，但所有元素都为-INF的张量，然后将其转置并改变为一维张量。
+        overlaps_inf = torch.full_like(overlaps, -INF).t().contiguous().view(-1)
+        # index包含了candidate_idxs中那些在is_pos中被标记为True的元素的索引。
         index = candidate_idxs.view(-1)[is_pos.view(-1)]
 
+        # 将overlaps_inf在index位置的值替换为overlaps中对应的值。
         overlaps_inf[index] = overlaps.t().contiguous().view(-1)[index]
+        # 将overlaps_inf的形状更改为(num_gt, some_value)
         overlaps_inf = overlaps_inf.view(num_gt, -1).t()
+        # 这在overlaps_inf的第二维（即列）上计算最大值。它返回两个张量：一个是每行的最大值，另一个是每行最大值的索引。
         max_overlaps, argmax_overlaps = overlaps_inf.max(dim=1)
 
-        overlaps_inf = torch.full_like(overlaps,
-                                       -INF).t().contiguous().view(-1)
+        overlaps_inf = torch.full_like(overlaps,-INF).t().contiguous().view(-1)
         overlaps_inf = overlaps_inf.view(num_gt, -1).t()
-        assigned_gt_inds[
-            max_overlaps != -INF] = argmax_overlaps[max_overlaps != -INF] + 1
-
-        vlr_region_iou[
-            max_overlaps != -INF] = max_overlaps[max_overlaps != -INF] + 0
-
+        # assigned_gt_inds中的每个位置将包含匹配到的gt真实框的索引或0（表示未匹配）。
+        assigned_gt_inds[max_overlaps != -INF] = argmax_overlaps[max_overlaps != -INF] + 1
+        # 对于那些与真实框有有效交集的预测框，更新其在vlr_region_iou数组中的IoU值。
+        vlr_region_iou[max_overlaps != -INF] = max_overlaps[max_overlaps != -INF] + 0
+        # vlr_region_iou 存储每个预测的边界框与其匹配的gt边界框之间的IoU（交并比）值。但需要注意，它并不是直接存放原始的IoU值
         return vlr_region_iou
